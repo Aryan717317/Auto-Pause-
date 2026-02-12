@@ -1,60 +1,99 @@
 (() => {
   let isTabActive = !document.hidden;
-  let pausedByExtension = new Set();
-  let enforceInterval = null;
+  const pausedByUs = new Set();
 
-  // ========== CORE: Pause all playing videos ==========
+  // ===================================================================
+  // NUCLEAR OPTION: Override video.play() with a no-op while tab hidden
+  // YouTube's internal JS calls video.play() to restart Shorts.
+  // By replacing the method itself, YouTube literally cannot play videos.
+  // ===================================================================
+
+  function disablePlay(video) {
+    if (!video.__originalPlay) {
+      video.__originalPlay = video.play.bind(video);
+      video.play = function () {
+        // Return a resolved promise (same contract as real play())
+        return Promise.resolve();
+      };
+    }
+  }
+
+  function restorePlay(video) {
+    if (video.__originalPlay) {
+      video.play = video.__originalPlay;
+      delete video.__originalPlay;
+    }
+  }
+
+  // ========== PAUSE ALL ==========
   function pauseAll() {
     isTabActive = false;
     const videos = document.querySelectorAll("video");
     videos.forEach((video) => {
+      // Override play() so YouTube can't restart it
+      disablePlay(video);
+
       if (!video.paused) {
-        video.pause();
-        pausedByExtension.add(video);
+        video.__originalPlay
+          ? (video.pause(), pausedByUs.add(video))
+          : (video.pause(), pausedByUs.add(video));
       }
     });
-    // Start enforcing pause — YouTube Shorts aggressively restarts videos
-    startEnforcing();
+
+    // Also observe for any NEW videos added while tab is hidden
+    startObserver();
   }
 
-  // ========== CORE: Resume videos we paused ==========
+  // ========== RESUME ALL ==========
   function resumeAll() {
     isTabActive = true;
-    stopEnforcing();
-    pausedByExtension.forEach((video) => {
+    stopObserver();
+
+    // Restore play() on ALL videos first
+    document.querySelectorAll("video").forEach((video) => {
+      restorePlay(video);
+    });
+
+    // Then resume only the ones we paused
+    pausedByUs.forEach((video) => {
+      restorePlay(video); // ensure restored
       video.play().catch(() => { });
     });
-    pausedByExtension.clear();
+    pausedByUs.clear();
   }
 
-  // ========== ENFORCE: Polling loop to keep videos paused ==========
-  // YouTube Shorts has internal JS that restarts videos.
-  // We fight back by checking every 300ms while the tab is hidden.
-  function startEnforcing() {
-    stopEnforcing();
-    enforceInterval = setInterval(() => {
-      if (isTabActive) {
-        stopEnforcing();
-        return;
-      }
-      const videos = document.querySelectorAll("video");
-      videos.forEach((video) => {
+  // ========== MUTATION OBSERVER ==========
+  let observer = null;
+
+  function startObserver() {
+    if (observer) return;
+    observer = new MutationObserver(() => {
+      if (isTabActive) return;
+      // Catch newly added videos and lock them too
+      document.querySelectorAll("video").forEach((video) => {
+        disablePlay(video);
         if (!video.paused) {
           video.pause();
-          pausedByExtension.add(video);
+          pausedByUs.add(video);
         }
       });
-    }, 300);
+    });
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
   }
 
-  function stopEnforcing() {
-    if (enforceInterval !== null) {
-      clearInterval(enforceInterval);
-      enforceInterval = null;
+  function stopObserver() {
+    if (observer) {
+      observer.disconnect();
+      observer = null;
     }
   }
 
-  // ========== LISTENER: Messages from background.js ==========
+  // ========== LISTENERS ==========
+
+  // 1. Messages from background.js (tab switch detection)
   chrome.runtime.onMessage.addListener((message) => {
     if (message.action === "pause") {
       pauseAll();
@@ -63,29 +102,12 @@
     }
   });
 
-  // ========== FALLBACK: visibilitychange (catches minimize, etc.) ==========
+  // 2. Fallback: visibilitychange (covers minimize, alt-tab, etc.)
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
+    if (document.hidden && isTabActive) {
       pauseAll();
-    } else {
+    } else if (!document.hidden && !isTabActive) {
       resumeAll();
     }
-  });
-
-  // ========== OBSERVER: Catch dynamically added videos ==========
-  const observer = new MutationObserver(() => {
-    if (isTabActive) return;
-    const videos = document.querySelectorAll("video");
-    videos.forEach((video) => {
-      if (!video.paused) {
-        video.pause();
-        pausedByExtension.add(video);
-      }
-    });
-  });
-
-  observer.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
   });
 })();
