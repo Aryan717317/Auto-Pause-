@@ -1,8 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Auto Pause YouTube",
-  "version": "1.0",
+  "version": "1.1",
   "description": "Automatically pauses YouTube videos when the tab is hidden and resumes when visible.",
+  "permissions": [
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": [
@@ -15,5 +21,5 @@
       "run_at": "document_idle"
     }
   ],
-  "permissions": []
+  "icons": {}
 }
